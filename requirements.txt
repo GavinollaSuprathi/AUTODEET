@@ -1,0 +1,8 @@
+streamlit
+pytesseract
+pdf2image
+Pillow
+spacy
+SpeechRecognition
+audio-recorder-streamlit
+gtts
