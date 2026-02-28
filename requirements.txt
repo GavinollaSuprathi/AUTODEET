@@ -1,8 +1,8 @@
-streamlit
-pytesseract
-pdf2image
-Pillow
-spacy
-SpeechRecognition
-audio-recorder-streamlit
-gtts
+streamlit>=1.28.0
+PyPDF2>=3.0.0
+spacy>=3.5.0
+SpeechRecognition>=3.10.0
+audio-recorder-streamlit>=0.0.8
+pydub>=0.25.1
+openai>=1.0.0
+googletrans==3.1.0a0
