@@ -1,136 +1,205 @@
 import re
-import spacy
-import pytesseract
-import PyPDF2
-from PIL import Image
-import csv
+import time
 
-# Load English NLP model. We'll handle ModelNotFound by downloading it in requirements setup.
-try:
-    nlp = spacy.load("en_core_web_sm")
-except OSError:
-    import spacy.cli
-    spacy.cli.download("en_core_web_sm")
-    nlp = spacy.load("en_core_web_sm")
+SKILLS_DATABASE = [
+    "Python", "Java", "JavaScript", "SQL", "HTML/CSS", "React", "Angular",
+    "Node.js", "Django", "Flask", "Machine Learning", "Data Analysis",
+    "Excel", "Power BI", "Tableau", "AWS", "Azure", "Docker", "Git",
+    "Linux", "AutoCAD", "MATLAB", "SAP", "Salesforce", "Tally",
+    "MS Office", "Communication", "Leadership", "Teamwork",
+    "Problem Solving", "Critical Thinking", "Time Management",
+    "Public Speaking", "Negotiation", "Adaptability", "Planning",
+    "Customer Service", "Management", "Writing", "Organization",
+]
 
-def load_skills(csv_path="skills.csv"):
+
+def extract_all_from_resume(uploaded_file):
+    """
+    Extract structured data from a PDF resume.
+    Returns a dict with: name, email, phone, education, skills,
+    experience_years, organizations, locations, years, raw_text, status.
+    """
+    start_time = time.time()
+
+    result = {
+        "status": "error",
+        "errors": [],
+        "name": None,
+        "email": None,
+        "phone": None,
+        "aadhaar": None,
+        "education": None,
+        "skills": [],
+        "experience_years": None,
+        "organizations": [],
+        "locations": [],
+        "years": [],
+        "raw_text": "",
+        "extraction_time": 0,
+    }
+
     try:
-        with open(csv_path, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            # Flatten, lowercase, strip
-            skills = []
-            for row in reader:
-                if row:
-                    skills.append(row[0].strip().lower())
-            return set(skills)
-    except FileNotFoundError:
-        return set()
+        # ── Try to read PDF ──────────────────────────────────────────
+        raw_text = ""
 
-def extract_text_from_image(image):
-    """Extract text from a PIL Image using pytesseract."""
-    text = pytesseract.image_to_string(image)
-    return text
-
-def extract_text_from_pdf(pdf_path):
-    """Extract text directly from PDF using PyPDF2."""
-    try:
-        text = ""
-        with open(pdf_path, 'rb') as f:
-            reader = PyPDF2.PdfReader(f)
+        try:
+            import PyPDF2
+            uploaded_file.seek(0)
+            reader = PyPDF2.PdfReader(uploaded_file)
             for page in reader.pages:
                 page_text = page.extract_text()
                 if page_text:
-                    text += page_text + "\n"
-        return text
+                    raw_text += page_text + "\n"
+        except ImportError:
+            try:
+                import pdfplumber
+                uploaded_file.seek(0)
+                with pdfplumber.open(uploaded_file) as pdf:
+                    for page in pdf.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            raw_text += page_text + "\n"
+            except ImportError:
+                result["errors"].append(
+                    "Install PyPDF2 or pdfplumber: "
+                    "pip install PyPDF2 pdfplumber"
+                )
+                result["extraction_time"] = time.time() - start_time
+                return result
+
+        if not raw_text.strip():
+            result["errors"].append(
+                "No text found in PDF. It may be image-based."
+            )
+            result["extraction_time"] = time.time() - start_time
+            return result
+
+        result["raw_text"] = raw_text
+
+        # ── Extract Email ────────────────────────────────────────────
+        email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+        emails = re.findall(email_pattern, raw_text)
+        if emails:
+            result["email"] = emails[0]
+
+        # ── Extract Phone ────────────────────────────────────────────
+        phone_pattern = r'(?:\+91[\s-]?)?(?:[6-9]\d{9})'
+        phones = re.findall(phone_pattern, raw_text)
+        if phones:
+            phone = re.sub(r'[\s\-\+]', '', phones[0])
+            if phone.startswith("91") and len(phone) == 12:
+                phone = phone[2:]
+            result["phone"] = phone[-10:]
+
+        # ── Extract Aadhaar ──────────────────────────────────────────
+        aadhaar_pattern = r'\b\d{4}\s?\d{4}\s?\d{4}\b'
+        aadhaars = re.findall(aadhaar_pattern, raw_text)
+        if aadhaars:
+            aadhaar = re.sub(r'\s', '', aadhaars[0])
+            if len(aadhaar) == 12:
+                result["aadhaar"] = aadhaar
+
+        # ── Extract Name (first non-empty line heuristic) ────────────
+        lines = [
+            ln.strip() for ln in raw_text.split("\n")
+            if ln.strip()
+            and not re.match(r'^(resume|curriculum|cv|portfolio)', ln.strip(), re.I)
+        ]
+        if lines:
+            candidate_name = lines[0]
+            # Remove numbers and special chars
+            candidate_name = re.sub(r'[^a-zA-Z\s\.]', '', candidate_name)
+            candidate_name = candidate_name.strip()
+            if 2 <= len(candidate_name) <= 60:
+                result["name"] = candidate_name.title()
+
+        # ── Extract Education ────────────────────────────────────────
+        text_lower = raw_text.lower()
+        education_mapping = {
+            "PhD": ["ph.d", "phd", "doctorate", "doctoral"],
+            "Post Graduate (M.Tech/ME/MBA/MCA/MSc/MA/MCom)": [
+                "m.tech", "mtech", "m.e.", "mba", "mca",
+                "m.sc", "msc", "m.a.", "m.com", "mcom",
+                "post graduate", "postgraduate", "master",
+            ],
+            "Undergraduate (B.Tech/BE/BBA/BCA/BSc/BA/BCom)": [
+                "b.tech", "btech", "b.e.", "bba", "bca",
+                "b.sc", "bsc", "b.a.", "b.com", "bcom",
+                "undergraduate", "bachelor",
+            ],
+            "Diploma": ["diploma"],
+            "Intermediate/12th": [
+                "intermediate", "12th", "hsc", "plus two",
+                "higher secondary",
+            ],
+            "SSC/10th": ["ssc", "10th", "matriculation"],
+            "ITI": ["iti", "industrial training"],
+        }
+
+        for edu_level, keywords in education_mapping.items():
+            for kw in keywords:
+                if kw in text_lower:
+                    result["education"] = edu_level
+                    break
+            if result["education"]:
+                break
+
+        # ── Extract Skills ───────────────────────────────────────────
+        for skill in SKILLS_DATABASE:
+            if re.search(
+                r'\b' + re.escape(skill) + r'\b', raw_text, re.I
+            ):
+                result["skills"].append(skill)
+
+        # ── Extract Years ────────────────────────────────────────────
+        year_pattern = r'\b(19|20)\d{2}\b'
+        years_found = [int(y) for y in re.findall(year_pattern, raw_text)]
+        years_found = sorted(set(years_found), reverse=True)
+        result["years"] = [
+            y for y in years_found if 1980 <= y <= 2025
+        ]
+
+        # ── Extract Experience ───────────────────────────────────────
+        exp_pattern = r'(\d+)\+?\s*(?:years?|yrs?)\s*(?:of)?\s*(?:experience)?'
+        exp_matches = re.findall(exp_pattern, text_lower)
+        if exp_matches:
+            result["experience_years"] = int(exp_matches[0])
+
+        # ── Extract Locations ────────────────────────────────────────
+        telangana_cities = [
+            "Hyderabad", "Warangal", "Nizamabad", "Karimnagar",
+            "Khammam", "Ramagundam", "Secunderabad", "Nalgonda",
+            "Adilabad", "Suryapet", "Miryalaguda", "Siddipet",
+            "Mancherial", "Jagtial", "Kamareddy",
+        ]
+        indian_cities = [
+            "Bangalore", "Mumbai", "Delhi", "Chennai", "Pune",
+            "Kolkata", "Ahmedabad", "Jaipur", "Lucknow", "Noida",
+            "Gurgaon", "Chandigarh", "Indore", "Coimbatore",
+            "Visakhapatnam", "Vijayawada", "Tirupati",
+        ]
+        all_cities = telangana_cities + indian_cities
+        for city in all_cities:
+            if re.search(r'\b' + re.escape(city) + r'\b', raw_text, re.I):
+                result["locations"].append(city)
+
+        # ── Extract Organizations (simple heuristic) ─────────────────
+        org_keywords = [
+            "university", "institute", "college", "school",
+            "technologies", "solutions", "pvt", "ltd", "inc",
+            "corporation", "company", "foundation", "academy",
+        ]
+        for line in raw_text.split("\n"):
+            line_stripped = line.strip()
+            if any(kw in line_stripped.lower() for kw in org_keywords):
+                clean = re.sub(r'[^\w\s\.\,\&]', '', line_stripped).strip()
+                if 5 <= len(clean) <= 100 and clean not in result["organizations"]:
+                    result["organizations"].append(clean)
+
+        result["status"] = "success"
+
     except Exception as e:
-        return f"Error extracting PDF: {str(e)}"
+        result["errors"].append(str(e))
 
-def extract_entities(text):
-    """Extract Name, Organization, Location using SpaCy."""
-    doc = nlp(text)
-    entities = {
-        "Name": [],
-        "Organization": [],
-        "Location": []
-    }
-    
-    for ent in doc.ents:
-        if ent.label_ == "PERSON":
-            entities["Name"].append(ent.text)
-        elif ent.label_ == "ORG":
-            entities["Organization"].append(ent.text)
-        elif ent.label_ == "GPE" or ent.label_ == "LOC":
-            entities["Location"].append(ent.text)
-            
-    # Simple deduplication while preserving some order
-    for key in entities:
-        filtered = []
-        for x in entities[key]:
-            if x not in filtered:
-                filtered.append(x)
-        entities[key] = filtered
-        
-    # --- Conversational Dictation Fallbacks ---
-    # If the user explicitly says "name is John" or "name: John", 
-    # spaCy often misses the proper noun context.
-    text_lower = text.lower()
-    
-    # Name Fallback
-    if not entities["Name"]:
-        name_match = re.search(r'(?:my\s+)?name\s*(?:is|:|-)\s*([a-zA-Z\s]+?)(?:(?:\.|,|\n|$)|(?:[a-z]+(?:\s+is|:|@)))', text_lower)
-        if name_match:
-            entities["Name"].append(name_match.group(1).strip().title())
-
-    # Organization Fallback
-    if not entities["Organization"]:
-        org_match = re.search(r'(?:company|organization|education|school|college|university)\s*(?:is|:|-)\s*([a-zA-Z0-9\s&]+?)(?:(?:\.|,|\n|$)|(?:[a-z]+(?:\s+is|:|@)))', text_lower)
-        if org_match:
-            entities["Organization"].append(org_match.group(1).strip().title())
-
-    # Location Fallback
-    if not entities["Location"]:
-        loc_match = re.search(r'(?:location|city|live in|from)\s*(?:is|:|-)?\s*([a-zA-Z\s]+?)(?:(?:\.|,|\n|$)|(?:[a-z]+(?:\s+is|:|@)))', text_lower)
-        if loc_match:
-            entities["Location"].append(loc_match.group(1).strip().title())
-            
-    return entities
-
-def extract_contact_info(text):
-    """Extract Email, Phone, and URLs using Regex."""
-    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-    phone_pattern = r'(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}'
-    url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+'
-    
-    emails = re.findall(email_pattern, text)
-    phones = re.findall(phone_pattern, text)
-    urls = re.findall(url_pattern, text)
-    
-    return {
-        "Emails": list(set(emails)),
-        "Phones": list(set(phones)),
-        "URLs": list(set(urls))
-    }
-
-def match_skills(text, skills_list):
-    """Match text against the provided skills list."""
-    text_lower = text.lower()
-    matched = []
-    for skill in skills_list:
-        # Simple string match or regex boundary match
-        # Using word boundaries to avoid partial matches like "it" matching inside "with"
-        pattern = r'\b' + re.escape(skill) + r'\b'
-        if re.search(pattern, text_lower):
-            matched.append(skill)
-    return list(set(matched))
-
-def extract_all(text, skills_list):
-    contact = extract_contact_info(text)
-    entities = extract_entities(text)
-    skills = match_skills(text, skills_list)
-    
-    return {
-        "RawText": text,
-        "ContactInfo": contact,
-        "Entities": entities,
-        "MatchedSkills": skills
-    }
+    result["extraction_time"] = time.time() - start_time
+    return result
